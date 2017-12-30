@@ -40,8 +40,21 @@ getTree(modFit$finalModel, k=2)
     
     
 irisP <- classCenter(training[,c(3,4)],training$species, modFit$finalModel$prox)
+irisP <- as.data.frame(irisP);irisP$species <- rownames(irisP)
+p <- qplot(petal.width, petal.Length,col=species, data=training)
+p + geom_point(aes(x=petal.width,y=petal.Length, col=species), size=5, shape=4, data=irisP)
     
+pred <- predict(modFit, testing)
+testing$predRight <- pred==testing$species
+
+iris_rf <- randomForest(species~.,data=training,ntree=100,proximity=TRUE)
+table(predict(iris_rf),training$species)
     
+importance(iris_rf)
+print(iris_rf)
+plot(iris_rf)
+    
+
     
     
     
