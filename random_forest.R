@@ -54,10 +54,19 @@ importance(iris_rf)
 print(iris_rf)
 plot(iris_rf)
     
-
+## Look at the third trees in the forest.
+getTree(randomForest(iris[,-5], iris[,5], ntree=10), 3, labelVar=TRUE)
+getTree(randomForest(iris[,-5], iris[,5], ntree=10), 5, labelVar=TRUE)    
+getTree(randomForest(iris[,-5], iris[,5], ntree=10), 10, labelVar=TRUE)   
+getTree(randomForest(iris[,-5], iris[,5], ntree=10), 11, labelVar=TRUE)  
     
     
     
+    
+data("rock")
+data("faithful")
+data("Titanic")
+data("swiss")
     
     
     
