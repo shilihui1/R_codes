@@ -24,6 +24,10 @@ DF <- melt(iris, vars = c("iris$species"), vars = c("iris$sepal.Length", "iris$s
 head(DF)
 boxplot(value ~ species + variable, DF)
     
+
+inTrain <- createDatapartition(y=iris$species, p=0.7, list=FALSE)
+training <- iris[inTrain,]
+testing <- iris[-inTrain,]
     
 inTrain
     
@@ -46,6 +50,8 @@ p + geom_point(aes(x=petal.width,y=petal.Length, col=species), size=5, shape=4, 
     
 pred <- predict(modFit, testing)
 testing$predRight <- pred==testing$species
+    
+table(pred, testing$species)
 
 iris_rf <- randomForest(species~.,data=training,ntree=100,proximity=TRUE)
 table(predict(iris_rf),training$species)
