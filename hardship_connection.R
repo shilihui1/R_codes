@@ -53,3 +53,41 @@ and T4.RECORD_DELETED_FLAG = 0
 ) Y
 where Y.ROW_NO = 1
 "
+
+sourcedata <- RxTeradata(
+  sqlQuery = tdQuery,
+  connectionString = cs,
+  removeMissings = TRUE
+ )
+
+rxGetInfo(data = sourcedata, getVarInfo = TRUE, numRows = 10)
+
+targetdata <- RxTeradata(
+  table = "Saver_final2",
+  connectionString = cs,
+  rowPerRead = 50000)
+
+if(rxTeradataTableExists("Saver_final2"))
+  rxTeradataTableExists("Saver_final2")
+
+sourcedata_DF <- rxImport(inData = sourcedata,
+                         outFile = "P:/.../sourcedata_DF.xdf",
+                         overwrite = TRUE,
+                         removeMissingsOnRead = TRUE)
+
+str(sourcedata_DF)
+head(sourcedata_DF)
+dim(sourcedata_DF)
+
+fit = glm(BAD ~ factor(GNDR_CD_BMAP) + factor(T1.MRTL_STAT_CD_BMAP) + factor(T2.OCPTN_CD_BMAP) + AGE, family = binomial(link = 'logit'), data = sourcedata_CD)
+summary(fit)
+
+###
+library(randomForest)
+
+set.seed(123)
+train = sample(1:nrow(sourcedata_DF), nrow(sourcedata_DF)/2)
+head(train)
+
+rf = randomForest(BAD ~ GNDR_CD_BMAP + MRTL_STAT_CD_BMAP + AGE, data = sourcedata_DF, subset = train, na.action = na.exclude)
+plot(rf)
