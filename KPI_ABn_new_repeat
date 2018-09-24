@@ -1,0 +1,189 @@
+### the subfunction file to be run in table_output_AB_new_repeat.R
+######### Enter test variance #############
+arms <- ConData[ConData$arm !='Default',]$arm
+
+# remove the top 1% positive demand
+UDV_table <- Data
+nrow(UDV_table)
+
+UDV_table$pur_demand[is.na(UDV_table$pur_demand)] <- 0
+UDV_table %>%
+  filter(pur_demand > 0) %>%
+  group_by(percent = ntile(pur_demand, 100)) %>%
+  select(cookie_id, percent) %>%
+  filter(percent == 100) -> Outlier
+
+UDV_table %>%
+  anti_join(Outlier, by = "cookie_id") -> UDV_table
+
+nrow(UDV_table)
+
+# divide the whole dataset by arm
+UDV_table_byexperiment <- UDV_table %>%
+  split(select(., arm), drop = TRUE)
+
+data.class(UDV_table_byexperiment)
+str(UDV_table_byexperiment)
+length(UDV_table_byexperiment)
+head(UDV_table)
+
+## convert it to data.table for later manipulations
+UDV_table <- as.data.table(UDV_table)
+
+## demand_groups
+temp <- as.data.frame(UDV_table[, mean(pur_demand), by = arm])
+pur_demand_groups <- temp[order(temp$arm), ]
+colnames(pur_demand_groups) <- c("arm", "pur_demand")
+#print(pur_demand_groups)
+
+temp <- as.data.frame(UDV_table[, length(cookie_id), by = arm])
+total_UDV <- temp[order(temp$arm), ]
+colnames(total_UDV) <- c("arm", "UDV")
+#print(total_UDV)
+
+## Product Views
+temp <- as.data.frame(UDV_table[, mean(pdpviews), by = arm])
+average_productviews_groups <- temp[order(temp$arm), ]
+colnames(average_productviews_groups) <- c("arm", "average_productviews")
+#print(average_productviews_groups)
+
+## Add to Bag
+temp <- as.data.frame(UDV_table[, sum(atb), by = arm])
+total_ATB_groups <- temp[order(temp$arm), ]
+colnames(total_ATB_groups) <- c("arm", "total_ATB")
+#print(total_ATB_groups)
+
+## Order Conversion
+temp <- as.data.frame(UDV_table[, sum(pur), by = arm])
+total_pur_groups <- temp[order(temp$arm), ]
+colnames(total_pur_groups) <- c("arm", "conversions")
+#print(total_pur_groups)
+
+## result by group: arm total_UDV average_productviews total_ATB total_orderconversion
+# arm total_UDV average_productviews total_ATB total_orderconversion
+res_groups = data.frame(total_UDV$arm, total_UDV$UDV, average_productviews_groups$average_productviews, total_ATB_groups$total_ATB, total_pur_groups$conversions)
+colnames(res_groups) = c("arm", "total_UDV", "average_productviews", "total_ATB", "total_pur")
+#print(res_groups)
+
+## test variances: test_ind can be 2,3, or 1,2
+control_ind <- which(res_groups$arm == 'Default')
+test_ind <- which(res_groups$arm != 'Default')
+
+## relative change average_productviews between each test(s) vs control
+RC_pdpviews <- lapply(test_ind, function(x) res_groups$average_productviews[x]/res_groups$average_productviews[control_ind] - 1)
+
+## relative change ABT between each test(s) vs control
+ATB_proptest <- lapply(test_ind, function(x) prop.test(
+  c(res_groups$total_ATB[res_groups$arm == 'Default'], res_groups$total_ATB[x]), 
+  c(res_groups$total_UDV[res_groups$arm == 'Default'], res_groups$total_UDV[x])))
+
+RC_ATB <- lapply(ATB_proptest, function(x) x$estimate[2]/x$estimate[1] - 1)
+
+## relative change Ord between each test(s) vs control
+Ord_proptest <- lapply(test_ind, function(x) prop.test(
+  c(res_groups$total_pur[res_groups$arm == 'Default'], res_groups$total_pur[x]), 
+  c(res_groups$total_UDV[res_groups$arm == 'Default'], res_groups$total_UDV[x])))
+
+RC_Ord <- lapply(Ord_proptest, function(x) x$estimate[2]/x$estimate[1] - 1)
+
+#### split the UDV_table based on parameter_value, then do statistical tests
+UDV_table_groups <- split(data.frame(UDV_table$pdpviews, UDV_table$pur_demand), UDV_table$arm, drop = TRUE)
+
+pdpviews_t_test <- lapply(test_ind, function(x) t.test(UDV_table_groups[[control_ind]]$UDV_table.pdpviews, UDV_table_groups[[x]]$UDV_table.pdpviews, conf.level = 0.9))
+pdpviews_u_test <- lapply(test_ind, function(x) wilcox.test(UDV_table_groups[[control_ind]]$UDV_table.pdpviews, UDV_table_groups[[x]]$UDV_table.pdpviews, conf.level = 0.9))
+
+pur_demand_t_test <- lapply(test_ind, function(x) t.test(UDV_table_groups[[control_ind]]$UDV_table.pur_demand, UDV_table_groups[[x]]$UDV_table.pur_demand, conf.level = 0.9))
+pur_demand_u_test <- lapply(test_ind, function(x) wilcox.test(UDV_table_groups[[control_ind]]$UDV_table.pur_demand, UDV_table_groups[[x]]$UDV_table.pur_demand, conf.level = 0.9))
+
+## relative change demand between each test(s) vs control
+RC_demand <- lapply(test_ind, function(x) pur_demand_groups$pur_demand[x]/pur_demand_groups$pur_demand[which(pur_demand_groups$arm == 'Default')] - 1)
+
+# calculate the KPIs for each arm
+options(scipen = 5)
+KPI_metrics <- c("Product Views", "Add to Bag", "Order Conversion", "Demand", "Demand_U")
+
+estimate_pdpviews <- unique(unlist(lapply(pdpviews_t_test, function(x) x$estimate)))
+estimate_ATB <- unique(unlist(lapply(ATB_proptest, function(x) x$estimate)))
+estimate_Ord <- unique(unlist(lapply(Ord_proptest, function(x) x$estimate)))
+estimate_demand <- unique(unlist(lapply(pur_demand_t_test, function(x) x$estimate)))
+estimate_demand_U <- estimate_demand
+
+p_value_pdpviews <- unique(unlist(lapply(pdpviews_t_test, function(x) x$p.value)))
+p_value_pdpviews_U <- unique(unlist(lapply(pdpviews_u_test, function(x) x$p.value)))
+p_value_ATB <- unique(unlist(lapply(ATB_proptest, function(x) x$p.value)))
+p_value_Ord <- unique(unlist(lapply(Ord_proptest, function(x) x$p.value)))
+p_value_demand <- unique(unlist(lapply(pur_demand_t_test, function(x) x$p.value)))
+p_value_demand_U <- unique(unlist(lapply(pur_demand_u_test, function(x) x$p.value)))
+
+########### Output Main Table: a list, each element is a comparison against control 
+options(scipen = 9)
+res <- list()
+
+for(i in 1:length(test_ind))
+{
+  
+  res[[i]] <- data.frame(matrix(0, nrow = 7, ncol = 5))
+  colnames(res[[i]]) <- c("control", as.character(res_groups$arm[test_ind][i]), "Relative Change", "P-value", "Significance")
+  rownames(res[[i]]) <- c("UDV", "Product Views", "Product Views_U", "Add to Bag", "Order Conversion", "Demand", "Demand_U")
+  
+  # control and test columns for KPIs
+  # find out the index of the control arm and this specific test arm
+  #ind <- which(total_UDV$arm %in% c('Default', as.character(res_groups$arm[test_ind][i])))
+  control_ind_here <- which(total_UDV$arm %in% c('Default'))
+  test_ind_here <- which(total_UDV$arm %in% c(as.character(res_groups$arm[test_ind][i])))
+  res[[i]]['UDV', 1:2] <- total_UDV$UDV[c(control_ind_here, test_ind_here)]
+  res[[i]]['UDV', 3:5] <- c('NA', 'NA', 'NA')
+  
+  ## need to revise!!!! 
+  ## in estimate_X vector, control is always the first one , and its length is always length(test_ind)+1
+  test_ind_here <- which(total_UDV$arm %in% c(as.character(res_groups$arm[test_ind][i])))
+  #res[[i]]['Product View Rate', 1:2] <- estimate_PVR[c(1, res_groups$arm[test_ind][i])]
+  res[[i]]['Product Views', 1:2] <- estimate_pdpviews[c(1, i+1)]  
+  res[[i]]['Product Views_U', 1:2] <- estimate_pdpviews[c(1, i+1)]  
+  res[[i]]['Add to Bag', 1:2] <- estimate_ATB[c(1, i+1)] 
+  res[[i]]['Order Conversion', 1:2] <- estimate_Ord[c(1, i+1)] 
+  res[[i]]['Demand', 1:2] <- estimate_demand[c(1, i+1)]
+  res[[i]]['Demand_U', 1:2] <- estimate_demand[c(1, i+1)]
+  
+  # relative change: since those RC vectors (RC_PVR, etc) always has length = length(test_ind) 
+  # c(1:length(test_ind))[]
+  test_ind_here <- test_ind_here + 1
+  res[[i]]['Product Views', 'Relative Change'] <- RC_pdpviews[[i]]
+  res[[i]]['Product Views_U', 'Relative Change'] <- RC_pdpviews[[i]]
+  res[[i]]['Add to Bag', 'Relative Change'] <- RC_ATB[[i]]
+  res[[i]]['Order Conversion', 'Relative Change'] <- RC_Ord[[i]]
+  res[[i]]['Demand', 'Relative Change'] <- RC_demand[[i]]
+  res[[i]]['Demand_U', 'Relative Change'] <- RC_demand[[i]]
+  
+  # p-value
+  res[[i]]['Product Views', 'P-value'] <- p_value_pdpviews[i]
+  res[[i]]['Product Views_U', 'P-value'] <- p_value_pdpviews_U[i]
+  res[[i]]['Add to Bag', 'P-value'] <- p_value_ATB[i]
+  res[[i]]['Order Conversion', 'P-value'] <- p_value_Ord[i]
+  res[[i]]['Demand', 'P-value'] <- p_value_demand[i]
+  res[[i]]['Demand_U', 'P-value'] <- p_value_demand_U[i]
+  
+  # significance
+  for(j in 2:7)
+  {
+    if(is.na(res[[i]][j, 'P-value'])){
+      res[[i]][j, 'Significance'] = NA
+    } else if(res[[i]][j, 'P-value'] <= 0.001) {
+      res[[i]][j, 'Significance'] = 'Statistically Significant***'
+    } else if(res[[i]][j, 'P-value'] <= 0.01) {
+      res[[i]][j, 'Significance'] = 'Statistically Significant**'
+    } else if(res[[i]][j, 'P-value'] <= 0.05) {
+      res[[i]][j, 'Significance'] = 'Statistically Significant*'
+    } else if(res[[i]][j, 'P-value'] <= 0.1) {
+      res[[i]][j, 'Significance'] = 'Statistically Significant'
+    } else {
+      res[[i]][j, 'Significance'] = 'Not Statistically Significant'
+    }
+  } # end for(j in 2:8)
+  
+  
+} #end for(i in 1:length(test_ind))
+
+print(res)
+
+RT111 <- res
