@@ -1,0 +1,72 @@
+# this works for ABn test's new vs repeat users, will run KPI_ABn_new_repeat.R inside
+rm(list=ls())
+options(java.parameters = "-Xmx8048m")
+library(RSQLite)
+library(dplyr)
+library(sqldf)
+library(RPostgreSQL)
+
+library(RJDBC)
+#download Amazon Redshift
+#download.file('https://s3.amazonaws.com/redshift-downloads/drivers/RedshiftJDBC42-1.2.10.1009.jar','RedshiftJDBC42-1.2.10.1009.jar', mode="wb");
+#connect to Amazon Redshift
+driver <- JDBC("com.amazon.redshift.jdbc42.Driver", "RedshiftJDBC42-1.2.10.1009.jar", identifier.quote="`")
+url <- "jdbc:redshift://ds-redshift-psbx-dsa.cblrlw3ocr3v.us-west-2.redshift.amazonaws.com:5439/cust_analytics_prd?user=ck2r&password=tP011720180550_8192_CK2R"
+con <- dbConnect(driver, url)
+
+`%+%` <- function(a,b) paste0(a,b)
+
+############### FOR ABn TEST ####################
+############### read in the table of UDV level table with visit type column
+table_name = "BI_USR.visit_type_UDV_LS" # output table from short query
+#table_name = "BI_USR.SNOWPLOW_UDV_LS" # output table from long query
+
+sqlcode <- "select * from " %+% table_name %+% ""
+
+Data_all <- sqlcode %>% RPostgreSQL::dbGetQuery(conn = con)
+head(Data_all)
+
+######## separate new and repeat data
+Data_new = Data_all[which(Data_all$visit_type == 'NEW'),]
+Data_repeat = Data_all[which(Data_all$visit_type == 'REPEAT'),]
+
+######### Binary Test ###########################################################################################################################
+ConData_new <- dbGetQuery (con, "SELECT ARM,
+                       MIN(SESSION_DATE) AS FIRST_DAY,
+                       MAX(SESSION_DATE) AS LAST_DAY,
+                       COUNT(COOKIE_ID) AS COOKIE_ID,
+                       AVG(PDPVIEWS) AS PDPVIEWS,
+                       SUM(PUR) AS TOTAL_PURCHASE,
+                       SUM(ATB) AS TOTAL_ATB,
+                       SUM(PUR_DEMAND) AS TOTAL_DEMAND
+                       FROM " %+% table_name %+% "
+                       WHERE VISIT_TYPE = 'NEW'
+                       GROUP BY ARM;")
+
+# new users
+print(head(ConData_new))
+ConData = ConData_new
+Data = Data_new
+#source("C:/Users/ck2r/Desktop/R codes/KPI_AB_new_repeat.R")
+source("P:/Rcodes/KPI_ABn_new_repeat.R")
+write.csv(RT111, "RT111_new.csv")
+
+ConData_repeat <- dbGetQuery (con, "SELECT ARM,
+                       MIN(SESSION_DATE) AS FIRST_DAY,
+                           MAX(SESSION_DATE) AS LAST_DAY,
+                           COUNT(COOKIE_ID) AS COOKIE_ID,
+                           AVG(PDPVIEWS) AS PDPVIEWS,
+                           SUM(PUR) AS TOTAL_PURCHASE,
+                           SUM(ATB) AS TOTAL_ATB,
+                           SUM(PUR_DEMAND) AS TOTAL_DEMAND
+                           FROM " %+% table_name %+% "
+                           WHERE VISIT_TYPE = 'REPEAT'
+                           GROUP BY ARM;")
+
+# repeated users
+print(head(ConData_repeat))
+ConData = ConData_repeat
+Data = Data_repeat
+#source("C:/Users/ck2r/Desktop/R codes/KPI_AB_new_repeat.R")
+source("P:/Rcodes/KPI_ABn_new_repeat.R")
+write.csv(RT111, "RT111_repeat.csv")
