@@ -1,0 +1,220 @@
+analyze_exp <- function(namespace){
+  
+  #connect to Amazon Redshift
+  driver <- RJDBC::JDBC("com.amazon.redshift.jdbc42.Driver", "RedshiftJDBC42-1.2.10.1009.jar", identifier.quote="`")
+  url <- "jdbc:redshift://ds-redshift-psbx-dsa.cblrlw3ocr3v.us-west-2.redshift.amazonaws.com:5439/cust_analytics_prd?user=ck2r&password=tP011720180550_8192_CK2R"
+  con <- RJDBC::dbConnect(driver, url)
+  
+  `%+%` <- function(a,b) paste0(a,b)
+  
+  sqlcode <- "select
+  namespace, 
+  cookie_id,
+  session_id,
+  session_date,
+  platform,
+  parameter_value,
+  page_views,
+  product_views,
+  items_added,
+  orders,
+  items_sold,
+  demand
+  from bi_prd.experiment_data
+  where multi_parameter_value_flag = 0
+  and namespace = '" %+% namespace %+% "'"
+  
+  tic("the time to load data by SQL query is")
+  experiment_data <- sqlcode %>% RJDBC::dbGetQuery(conn = con)
+  toc()
+  
+  #close connection
+  RJDBC::dbDisconnect(con)
+  
+  print(namespace)
+  print(nrow(experiment_data))
+  
+  tic("the time to do analysis")
+  arms <- sort(unique(experiment_data$parameter_value))
+  n_arms <- length(arms)
+  
+  if(n_arms < 2)
+  {
+    next
+  }
+  
+  ############### create the UDV level table from session level table  
+  b <- data.table(experiment_data)
+  UDV_table <- b[, lapply(.SD, sum), by = list(cookie_id, session_date, parameter_value), .SDcols = c("items_added", "orders", "product_views", "items_sold", "demand") ] 
+  
+  UDV_table <- as.data.frame(UDV_table)
+  
+  ## add two extra columns for the binary ATB and PUR, and Product view rate
+  setnames(UDV_table, old = c('items_added', 'orders', 'product_views', 'items_sold', 'demand'), new = c('abt_items', 'orders_sum', 'pdpviews', 'pur_items', 'pur_demand'))
+  
+  UDV_table$ATB <- UDV_table$abt_items
+  UDV_table$PUR <- UDV_table$orders_sum
+  UDV_table$PVR <- UDV_table$pdpviews
+  
+  ## convert items_sum (ATB) and orders_sum (PUR) to be 1 if they are > 0
+  UDV_table$ATB[UDV_table$ATB != 0] <- 1
+  UDV_table$PUR[UDV_table$PUR != 0] <- 1
+  UDV_table$PVR[UDV_table$PVR != 0] <- 1
+  
+  ## remove the top 1% of positive pur_demand: 0.27 secs
+  UDV_table %>%
+    filter(pur_demand > 0) %>%
+    group_by(percent = ntile(pur_demand, 100)) %>%
+    select(cookie_id, percent) %>%
+    filter(percent == 100) -> Outlier
+  
+  UDV_table %>%
+    anti_join(Outlier, by = "cookie_id") -> UDV_table
+  
+  ## convert it to data.table for later manipulations
+  UDV_table <- as.data.table(UDV_table)
+  
+  ## demand_groups
+  temp <- as.data.frame(UDV_table[, mean(pur_demand), by = parameter_value])
+  pur_demand_groups <- temp[order(temp$parameter_value), ]
+  colnames(pur_demand_groups) <- c("arm", "pur_demand")
+  
+  temp <- as.data.frame(UDV_table[, length(cookie_id), by = parameter_value])
+  total_UDV <- temp[order(temp$parameter_value), ]
+  colnames(total_UDV) <- c("arm", "UDV")
+  
+  ## Product View Rate
+  temp <- as.data.frame(UDV_table[, sum(PVR), by = parameter_value])
+  total_PVR_groups <- temp[order(temp$parameter_value), ]
+  
+  ## Product Views
+  temp <- as.data.frame(UDV_table[, mean(pdpviews), by = parameter_value])
+  average_productviews_groups <- temp[order(temp$parameter_value), ]
+  
+  ## Add to Bag
+  temp <- as.data.frame(UDV_table[, sum(ATB), by = parameter_value])
+  total_ATB_groups <- temp[order(temp$parameter_value), ]
+  
+  ## Order Conversion
+  temp <- as.data.frame(UDV_table[, sum(PUR), by = parameter_value])
+  total_pur_groups <- temp[order(temp$parameter_value), ]
+  
+  ## result by group: arm total_UDV average_productviews total_ATB total_orderconversion
+  # arm total_UDV average_productviews total_ATB total_orderconversion
+  res_groups = data.frame(total_UDV$arm, total_UDV[, 2], total_PVR_groups[, 2], average_productviews_groups[, 2], total_ATB_groups[, 2], total_pur_groups[, 2])
+  colnames(res_groups) = c("arm", "total_UDV", "total_PVR", "average_productviews", "total_ATB", "total_pur")
+  #print(res_groups)
+  
+  ## test variances
+  control_ind <- which(tolower(res_groups$arm) == 'default')
+  test_ind <- which(tolower(res_groups$arm) != 'default')
+  
+  ## relative change average_productviews between each test(s) vs control
+  RC_PVR <- lapply(test_ind, function(x) res_groups$total_PVR[x]/res_groups$total_PVR[control_ind] - 1)
+  
+  ## relative change ABT between each test(s) vs control
+  PVR_proptest <- lapply(test_ind, function(x) prop.test(
+    c(res_groups$total_PVR[tolower(res_groups$arm) == 'default'], res_groups$total_PVR[x]), 
+    c(res_groups$total_UDV[tolower(res_groups$arm) == 'default'], res_groups$total_UDV[x])))
+  
+  ## relative change average_productviews between each test(s) vs control
+  RC_pdpviews <- lapply(test_ind, function(x) res_groups$average_productviews[x]/res_groups$average_productviews[control_ind] - 1)
+  
+  ## relative change ABT between each test(s) vs control
+  ATB_proptest <- lapply(test_ind, function(x) prop.test(
+    c(res_groups$total_ATB[tolower(res_groups$arm) == 'default'], res_groups$total_ATB[x]), 
+    c(res_groups$total_UDV[tolower(res_groups$arm) == 'default'], res_groups$total_UDV[x])))
+  
+  RC_ATB <- lapply(ATB_proptest, function(x) x$estimate[2]/x$estimate[1] - 1)
+  
+  ## relative change Ord between each test(s) vs control
+  Ord_proptest <- lapply(test_ind, function(x) prop.test(
+    c(res_groups$total_pur[tolower(res_groups$arm) == 'default'], res_groups$total_pur[x]), 
+    c(res_groups$total_UDV[tolower(res_groups$arm) == 'default'], res_groups$total_UDV[x])))
+  
+  RC_Ord <- lapply(Ord_proptest, function(x) x$estimate[2]/x$estimate[1] - 1)
+  
+  #### split the UDV_table based on parameter_value, then do statistical tests
+  UDV_table_groups <- split(data.frame(UDV_table$pdpviews, UDV_table$pur_demand), UDV_table$parameter_value, drop = TRUE)
+  
+  pdpviews_t_test <- lapply(test_ind, function(x) t.test(UDV_table_groups[[control_ind]]$UDV_table.pdpviews, UDV_table_groups[[x]]$UDV_table.pdpviews, conf.level = 0.9))
+  pdpviews_u_test <- lapply(test_ind, function(x) wilcox.test(UDV_table_groups[[control_ind]]$UDV_table.pdpviews, UDV_table_groups[[x]]$UDV_table.pdpviews, conf.level = 0.9))
+  pur_demand_t_test <- lapply(test_ind, function(x) t.test(UDV_table_groups[[control_ind]]$UDV_table.pur_demand, UDV_table_groups[[x]]$UDV_table.pur_demand, conf.level = 0.9))
+  pur_demand_u_test <- lapply(test_ind, function(x) wilcox.test(UDV_table_groups[[control_ind]]$UDV_table.pur_demand, UDV_table_groups[[x]]$UDV_table.pur_demand, conf.level = 0.9))
+  
+  ## relative change demand between each test(s) vs control
+  RC_demand <- lapply(test_ind, function(x) pur_demand_groups$pur_demand[x]/pur_demand_groups$pur_demand[which(tolower(pur_demand_groups$arm) == 'default')] - 1)
+  
+  # -------------- output block iterates... 
+  # each block includes following rows: c("Product Views", "Product Views_U", "Add to Bag", "Order Conversion", "Demand", "Demand_U")
+  # with following columns: c("namespace", "parameter_value", "analysis_timestamp",	"experiment_name", "parameter_name", "outcome", "estimate",	"relative_change", "p_value", "significance", "n_analyzed")
+  options(scipen = 5)
+  
+  KPI_metrics <- c("Product View Rate", "Product Views", "Product Views_U", "Add to Bag", "Order Conversion", "Demand", "Demand_U")
+  n_metrics <- length(KPI_metrics)
+  
+  parameter_value_vec <- rep(arms, times = n_metrics)
+  outcome_vec <- rep(KPI_metrics, each = n_arms)
+  
+  estimate_PVR <- unique(unlist(lapply(PVR_proptest, function(x) x$estimate)))
+  estimate_pdpviews <- unique(unlist(lapply(pdpviews_t_test, function(x) x$estimate)))
+  estimate_pdpviews_U <- estimate_pdpviews
+  estimate_ATB <- unique(unlist(lapply(ATB_proptest, function(x) x$estimate)))
+  estimate_Ord <- unique(unlist(lapply(Ord_proptest, function(x) x$estimate)))
+  estimate_demand <- unique(unlist(lapply(pur_demand_t_test, function(x) x$estimate)))
+  estimate_demand_U <- estimate_demand
+  estimate_vec <- c(estimate_PVR, estimate_pdpviews, estimate_pdpviews_U, estimate_ATB, estimate_Ord, estimate_demand, estimate_demand_U)
+  
+  relative_change_vec <- c(c(NA, unlist(RC_PVR)), c(NA, unlist(RC_pdpviews)), c(NA, unlist(RC_pdpviews)), c(NA, unlist(RC_ATB)), c(NA, unlist(RC_Ord)), c(NA, unlist(RC_demand)), c(NA, unlist(RC_demand)))
+  
+  p_value_PVR <- unique(unlist(lapply(PVR_proptest, function(x) x$p.value)))
+  p_value_pdpviews <- unique(unlist(lapply(pdpviews_t_test, function(x) x$p.value)))
+  p_value_pdpviews_U <- unique(unlist(lapply(pdpviews_u_test, function(x) x$p.value)))
+  p_value_ATB <- unique(unlist(lapply(ATB_proptest, function(x) x$p.value)))
+  p_value_Ord <- unique(unlist(lapply(Ord_proptest, function(x) x$p.value)))
+  p_value_demand <- unique(unlist(lapply(pur_demand_t_test, function(x) x$p.value)))
+  p_value_demand_U <- unique(unlist(lapply(pur_demand_u_test, function(x) x$p.value)))
+  p_value_vec <- c(c(NA, p_value_PVR), c(NA, p_value_pdpviews), c(NA, p_value_pdpviews_U), c(NA, p_value_ATB), c(NA, p_value_Ord), c(NA, p_value_demand), c(NA, p_value_demand_U))
+  
+  significance_vec <- rep(NA, length(p_value_vec))
+  for(j in 1:length(p_value_vec))
+  {
+    if(is.na(p_value_vec[j])){
+      significance_vec[j] = NA
+    } else if(p_value_vec[j] <= 0.001) {
+      significance_vec[j] = 'Statistically Significant***'
+    } else if(p_value_vec[j] <= 0.01) {
+      significance_vec[j] = 'Statistically Significant**'
+    } else if(p_value_vec[j] <= 0.05) {
+      significance_vec[j] = 'Statistically Significant*'
+    } else if(p_value_vec[j] <= 0.1) {
+      significance_vec[j] = 'Statistically Significant'
+    } else {
+      significance_vec[j] = 'Not Statistically Significant'
+    }
+  }
+  toc()
+  
+  ## UDV numbers for each arm
+  UDV_groups <- unlist(lapply(UDV_table_groups, nrow))
+  UDV_vec <- rep(UDV_groups, times = n_metrics)
+  
+  ## get counts for each arm
+  session_groups <- unlist(lapply(split(experiment_data, experiment_data$parameter_value, drop = TRUE), nrow))
+  session_vec <- rep(session_groups, times = n_metrics)
+  
+  namespace_vec <- rep(unique(experiment_data$namespace), times = n_arms*n_metrics)
+  parameter_value_vec <- rep(arms, times = n_metrics)
+  analysis_timestamp <- Sys.time()
+  analysis_timestamp_vec <- rep(analysis_timestamp, times = n_arms*n_metrics)
+  
+  ## output the result block by block for different iterations 
+  output <- data.frame(namespace_vec, analysis_timestamp_vec, parameter_value_vec, outcome_vec, estimate_vec, relative_change_vec, p_value_vec, significance_vec, UDV_vec, session_vec)
+  colnames(output) = c("namespace", "analysis_timestamp", "parameter_value", "outcome", "estimate", "relative_change", "p_value", "significance", "n_UDV", "n_session")
+  
+  print(output)
+  
+  return(output)
+  print(paste("we finished a for loop for namespace =", namespace))
+  
+}
