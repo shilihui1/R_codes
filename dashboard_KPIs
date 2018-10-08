@@ -1,13 +1,12 @@
 #output the experiments KPIs results for each experiment, by reading in the current session level data in the production and sourcing the analyze_exp.R file
 source("~/analyze_exp.R")
 options(java.parameters = "-Xmx488g")
-library(dplyr)
-library(data.table)
-library(tictoc)
-library(rJava)
-library(foreach)
-library(tidyverse)
-library(nordyr)
+require(dplyr)
+require(rJava)
+require(foreach)
+require(tidyverse)
+require(nordyr)
+#library(ElmeR)
 
 #download Amazon Redshift
 #download.file('https://s3.amazonaws.com/redshift-downloads/drivers/RedshiftJDBC42-1.2.10.1009.jar','RedshiftJDBC42-1.2.10.1009.jar', mode="wb");
@@ -19,17 +18,22 @@ con <- RJDBC::dbConnect(driver, url)
 # current session level data in the production
 # load experiments information into R based on counts of each namespace
 sqlcode <- "select count(*) as size_count, namespace
-from  bi_prd.experiment_data 
+from bi_prd.experiment_data 
 group by namespace
 order by size_count"
 
 # find all the namespace and its start date
 experiment_information <- sqlcode %>% RJDBC::dbGetQuery(conn = con)
+
+#close connection
+RJDBC::dbDisconnect(con)
+rm(con)
+
 print(experiment_information)
 print(sum(experiment_information$size_count))
 
-# only evaluate the experiments which have more than 10,000 rows in the table
-min_evaluation_size <- 10000
+# only evaluate the experiments which have more than 50,000 rows in the table
+min_evaluation_size <- 50000
 k_evaluate_start <- min(which(experiment_information$size_count >= min_evaluation_size))
 print(k_evaluate_start)
 
@@ -47,29 +51,20 @@ res <- data.frame(namespace = character(),
                   relative_change = double(),
                   p_value = double(), 
                   significance = character(),
-                  n_UDV = integer(),
-                  n_session = integer())
-
-
-tic("total")
+                  n_UDV = integer())
 
 # apply over all the namespaces
 res <- lapply(namespace_list, analyze_exp) %>%
-      bind_rows()
-
-toc()
+       bind_rows()
 
 print(res)
 
-write.csv(res, "res.csv")
-
 #push experiment results to redshift
+con <- RJDBC::dbConnect(driver, url)
+
 redshift_send(dataframe = res,
               schema.tablename = 'bi_usr.tto_experiment_results_ls',
               con = con,
               overwrite = FALSE)
 
-#close connection
-RJDBC::dbDisconnect(con)
-rm(con)
 gc()
