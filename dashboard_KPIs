@@ -1,4 +1,4 @@
-#output the experiments KPIs results for each experiment, by reading in the current session level data in the production and sourcing the analyze_exp.R file
+# output the experiments KPIs results for each experiment, by reading in bi_prd.experiment_data and sourcing the analyze_exp.R file
 source("~/analyze_exp.R")
 options(java.parameters = "-Xmx488g")
 require(dplyr)
@@ -6,41 +6,40 @@ require(rJava)
 require(foreach)
 require(tidyverse)
 require(nordyr)
-#library(ElmeR)
 
-#download Amazon Redshift
-#download.file('https://s3.amazonaws.com/redshift-downloads/drivers/RedshiftJDBC42-1.2.10.1009.jar','RedshiftJDBC42-1.2.10.1009.jar', mode="wb");
-#connect to Amazon Redshift
+# download Amazon Redshift
+# download.file('https://s3.amazonaws.com/redshift-downloads/drivers/RedshiftJDBC42-1.2.10.1009.jar','RedshiftJDBC42-1.2.10.1009.jar', mode="wb");
+# connect to Amazon Redshift
 driver <- RJDBC::JDBC("com.amazon.redshift.jdbc42.Driver", "RedshiftJDBC42-1.2.10.1009.jar", identifier.quote="`")
 url <- "jdbc:redshift://ds-redshift-psbx-dsa.cblrlw3ocr3v.us-west-2.redshift.amazonaws.com:5439/cust_analytics_prd?user=ck2r&password=tP011720180550_8192_CK2R"
 con <- RJDBC::dbConnect(driver, url)
 
-# current session level data in the production
-# load experiments information into R based on counts of each namespace
-sqlcode <- "select count(*) as size_count, namespace
+# currently we have session level data in the production, will be changed to UDV level data later
+# load experiments information into R based on counts of the smallest arm for each namespace
+sqlcode <- "select min(size_count) as min_size_count, namespace
+from
+(
+select count(*) as size_count, namespace, parameter_value
 from bi_prd.experiment_data 
+group by namespace, parameter_value
+order by size_count
+)
 group by namespace
-order by size_count"
+order by min_size_count"
 
-# find all the namespace and its start date
+# find all the namespace and its smallest arm counts
 experiment_information <- sqlcode %>% RJDBC::dbGetQuery(conn = con)
 
-#close connection
+# close connection
 RJDBC::dbDisconnect(con)
 rm(con)
 
-print(experiment_information)
-print(sum(experiment_information$size_count))
+# only evaluate the experiments whose smallest arm is more than 35,000 rows in the table
+min_evaluation_size <- 35000
+k_evaluate_start <- min(which(experiment_information$min_size_count >= min_evaluation_size))
 
-# only evaluate the experiments which have more than 50,000 rows in the table
-min_evaluation_size <- 50000
-k_evaluate_start <- min(which(experiment_information$size_count >= min_evaluation_size))
-print(k_evaluate_start)
-
-# find out all namespaces
-namespace_list <- experiment_information$namespace
-k <- length(namespace_list)
-print(k)
+# find out all namespaces that are qualified to be analyzed
+namespace_list <- experiment_information$namespace[k_evaluate_start:nrow(experiment_information)]
 
 # initialize the output result 
 res <- data.frame(namespace = character(), 
@@ -53,13 +52,11 @@ res <- data.frame(namespace = character(),
                   significance = character(),
                   n_UDV = integer())
 
-# apply over all the namespaces
+# apply over all the namespaces and combine the results
 res <- lapply(namespace_list, analyze_exp) %>%
        bind_rows()
 
-print(res)
-
-#push experiment results to redshift
+# push experiment results to redshift
 con <- RJDBC::dbConnect(driver, url)
 
 redshift_send(dataframe = res,
