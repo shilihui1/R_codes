@@ -30,7 +30,17 @@ analyze_exp <- function(namespace){
   # close connection
   RJDBC::dbDisconnect(con)
   
-  arms <- sort(unique(experiment_data$parameter_value))
+  # adjust the order of the 'parameter_value' column so that control is always the first, then all others by alphabetical order 
+  arms <- unique(experiment_data$parameter_value)
+  control_ind <- which(tolower(arms) == 'default')
+  
+  if(length(control_ind) == 0)
+  {
+    warning("Experiment ", namespace, " has no default arm, skip!")
+    return(data_frame())
+  }
+  
+  arms <- c(arms[control_ind], sort(arms[-control_ind]))
   n_arms <- length(arms)
   
   if(n_arms < 2)
@@ -77,7 +87,10 @@ analyze_exp <- function(namespace){
   
   colnames(res_groups) <- c("arm", "total_UDV", "total_PVR", "total_ATB", "total_pur", "average_pdpviews", "average_demand")
   
-  # test variances
+  # adjust the order of the 'arm' column so that control is always the first, then all others by alphabetical order
+  res_groups <- res_groups[match(arms, res_groups$arm),]
+  
+  # test variances: 
   control_ind <- which(tolower(res_groups$arm) == 'default')
   test_ind <- which(tolower(res_groups$arm) != 'default')
   
@@ -100,6 +113,7 @@ analyze_exp <- function(namespace){
   
   RC_Ord <- lapply(Ord_proptest, function(x) x$estimate[2]/x$estimate[1] - 1)
   
+  # control group must be the first one
   relative_change_vec <- c(c(NA, unlist(RC_PVR)), c(NA, unlist(RC_pdpviews)), c(NA, unlist(RC_ATB)), c(NA, unlist(RC_Ord)), c(NA, unlist(RC_demand)))
   
   # split the UDV_table based on parameter_value, then do statistical tests for pdpviews and pur_demand
@@ -157,8 +171,8 @@ analyze_exp <- function(namespace){
   UDV_groups <- unlist(lapply(UDV_table_groups, nrow))
   UDV_vec <- rep(UDV_groups, times = n_metrics)
   
-  namespace_vec <- rep(unique(experiment_data$namespace), times = n_arms*n_metrics)
-  parameter_value_vec <- rep(arms, times = n_metrics)
+  namespace_vec <- rep(unique(experiment_data$namespace), times = n_arms*n_metrics) 
+  parameter_value_vec <- rep(arms, times = n_metrics)  
   analysis_timestamp <- format(Sys.time(), tz = "America/Los_Angeles", usetz = TRUE)
   analysis_timestamp_vec <- rep(analysis_timestamp, times = n_arms*n_metrics)
   
