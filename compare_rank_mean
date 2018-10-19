@@ -1,0 +1,39 @@
+comparerank <- function(a, b){
+require(dplyr)
+require(data.table)
+
+n_a <- length(a)
+n_b <- length(b)
+
+df <- data.frame(c(a, b), c(rep('a', n_a), rep('b', n_b)))
+colnames(df) <- c('values', 'groups')
+
+df$ranks <- rank(df$values)
+
+setDT(df)
+df_length <- df[, lapply(.SD, length), by = .(groups)]
+colnames(df_length) <- c('groups', 'length', 'length_1')
+
+df_mean <- df[, lapply(.SD, mean), by = .(groups)]
+colnames(df_mean) <- c('groups', 'mean', 'avg_rank')
+
+df_sum <- df[, lapply(.SD, sum), by = .(groups)]
+colnames(df_sum) <- c('groups', 'sum', 'sum_rank')
+
+df_summary <- merge(df_length, df_mean, all.x = TRUE) %>%
+              merge(., df_sum, all.x = TRUE)
+
+df_summary$U <- prod(df_summary$length) + df_summary$length*(df_summary$length + 1)/2 - df_summary$sum_rank
+print(df_summary)
+
+check <- which.max(df_summary$mean) == which.min(df_summary$U)
+
+return(check)
+
+}
+
+a <- c(8, 7, 6, 2, 5, 8, 7, 3)
+b <- c(9, 8, 7, 8, 10, 9, 6)
+
+res <- comparerank(a, b)
+print(res)
