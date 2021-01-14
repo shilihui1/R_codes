@@ -1,6 +1,4 @@
 # Functions for testing functions in IFFMathR/computeNonBinomialRobust.R
-## Copyright 2011 Webtrends Inc. All Rights Reserved.
-## Webtrends PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.
 ## Functions in this file:
 
 
@@ -11,7 +9,7 @@
 require(Rfit)
 
 call.compute.NonBinomial.AllSaints <- function(plots=FALSE)
-## Testing the East Coast data. See email from Phil on 6/12/12.
+## Testing the East Coast data. 
 ## 6/15/2012
 {
 printout("Testing the All Saints data")
